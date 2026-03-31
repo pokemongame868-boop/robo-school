@@ -1,6 +1,10 @@
-import { useState, useEffect } from 'react';
-import { collection, addDoc, getDocs, deleteDoc, doc, orderBy, query, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { useState, useEffect, useRef } from 'react';
+import {
+  collection, addDoc, getDocs, deleteDoc, doc,
+  orderBy, query, serverTimestamp, updateDoc
+} from 'firebase/firestore';
+import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
+import { db, storage } from '../firebase/config';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
@@ -12,6 +16,7 @@ const emptyStage = {
   duration: '',
   order: 0,
   quiz: [],
+  attachments: [],
 };
 
 const emptyQuestion = { question: '', options: ['', '', '', ''], correct: 0 };
@@ -22,8 +27,12 @@ export default function Admin() {
   const [stages, setStages] = useState([]);
   const [form, setForm] = useState(emptyStage);
   const [quiz, setQuiz] = useState([]);
+  const [attachments, setAttachments] = useState([]); // [{name, url, size, storagePath}]
   const [saving, setSaving] = useState(false);
-  const [tab, setTab] = useState('list'); // 'list' | 'add'
+  const [tab, setTab] = useState('list'); // 'list' | 'add' | 'edit'
+  const [editingId, setEditingId] = useState(null);
+  const [uploads, setUploads] = useState({}); // {filename: progress 0-100}
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (!isAdmin) navigate('/courses');
@@ -36,6 +45,32 @@ export default function Admin() {
     setStages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
   };
 
+  // ---- Открыть форму редактирования ----
+  const openEdit = (stage) => {
+    setEditingId(stage.id);
+    setForm({
+      title: stage.title || '',
+      description: stage.description || '',
+      videoUrl: stage.videoUrl || '',
+      content: stage.content || '',
+      duration: stage.duration || '',
+      order: stage.order ?? 0,
+    });
+    setQuiz(stage.quiz ? stage.quiz.map(q => ({ ...q, options: [...q.options] })) : []);
+    setAttachments(stage.attachments || []);
+    setTab('edit');
+  };
+
+  // ---- Открыть форму добавления ----
+  const openAdd = () => {
+    setEditingId(null);
+    setForm(emptyStage);
+    setQuiz([]);
+    setAttachments([]);
+    setTab('add');
+  };
+
+  // ---- Вопросы ----
   const addQuestion = () => setQuiz([...quiz, { ...emptyQuestion, options: ['', '', '', ''] }]);
 
   const updateQuestion = (qi, field, value) => {
@@ -51,18 +86,86 @@ export default function Admin() {
 
   const removeQuestion = (qi) => setQuiz(prev => prev.filter((_, i) => i !== qi));
 
+  // ---- Загрузка файлов ----
+  const handleFileUpload = (e) => {
+    const files = Array.from(e.target.files);
+    files.forEach(file => uploadFile(file));
+    e.target.value = '';
+  };
+
+  const uploadFile = (file) => {
+    const safeName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const storageRef = ref(storage, `stages/${safeName}`);
+    const task = uploadBytesResumable(storageRef, file);
+
+    setUploads(prev => ({ ...prev, [file.name]: 0 }));
+
+    task.on(
+      'state_changed',
+      (snap) => {
+        const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+        setUploads(prev => ({ ...prev, [file.name]: pct }));
+      },
+      (err) => {
+        console.error(err);
+        alert(`Жүктеу қатесі: ${file.name}`);
+        setUploads(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+      },
+      async () => {
+        const url = await getDownloadURL(task.snapshot.ref);
+        const sizeLabel = file.size < 1024 * 1024
+          ? `${(file.size / 1024).toFixed(1)} KB`
+          : `${(file.size / 1024 / 1024).toFixed(1)} MB`;
+        setAttachments(prev => [...prev, {
+          name: file.name,
+          url,
+          size: sizeLabel,
+          storagePath: `stages/${safeName}`,
+        }]);
+        setUploads(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+      }
+    );
+  };
+
+  const removeAttachment = async (i) => {
+    const att = attachments[i];
+    // Удаляем из Storage если есть путь
+    if (att.storagePath) {
+      try {
+        await deleteObject(ref(storage, att.storagePath));
+      } catch (_) {}
+    }
+    setAttachments(prev => prev.filter((_, j) => j !== i));
+  };
+
+  // ---- Сохранение ----
   const handleSubmit = async () => {
     if (!form.title.trim()) return alert('Тақырыпты енгізіңіз');
+    if (Object.keys(uploads).length > 0) return alert('Файлдар жүктелуде, күте тұрыңыз...');
     setSaving(true);
     try {
-      await addDoc(collection(db, 'stages'), {
+      const data = {
         ...form,
-        order: stages.length,
         quiz,
-        createdAt: serverTimestamp(),
-      });
+        attachments,
+      };
+
+      if (editingId) {
+        // Редактирование
+        await updateDoc(doc(db, 'stages', editingId), data);
+      } else {
+        // Добавление
+        await addDoc(collection(db, 'stages'), {
+          ...data,
+          order: stages.length,
+          createdAt: serverTimestamp(),
+        });
+      }
+
       setForm(emptyStage);
       setQuiz([]);
+      setAttachments([]);
+      setEditingId(null);
       await loadStages();
       setTab('list');
     } catch (e) {
@@ -81,6 +184,9 @@ export default function Admin() {
 
   if (!isAdmin) return null;
 
+  const isEditing = tab === 'edit';
+  const isFormTab = tab === 'add' || tab === 'edit';
+
   return (
     <div className="max-w-3xl mx-auto px-8 py-10">
       <div className="flex items-center justify-between mb-8">
@@ -89,12 +195,19 @@ export default function Admin() {
           <p className="text-slate-500 text-sm mt-1">Тек Ерулан үшін</p>
         </div>
         <div className="flex bg-white/5 rounded-xl p-1">
-          {[['list', 'Этаптар'], ['add', 'Қосу']].map(([t, l]) => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`px-4 py-2 rounded-lg text-sm font-bold transition ${tab === t ? 'bg-indigo-500 text-white' : 'text-slate-400 hover:text-white'}`}>
-              {l}
+          <button onClick={() => setTab('list')}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition ${tab === 'list' ? 'bg-indigo-500 text-white' : 'text-slate-400 hover:text-white'}`}>
+            Этаптар
+          </button>
+          <button onClick={openAdd}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition ${tab === 'add' ? 'bg-indigo-500 text-white' : 'text-slate-400 hover:text-white'}`}>
+            Қосу
+          </button>
+          {isEditing && (
+            <button className="px-4 py-2 rounded-lg text-sm font-bold bg-amber-500 text-white">
+              Өңдеу
             </button>
-          ))}
+          )}
         </div>
       </div>
 
@@ -115,9 +228,13 @@ export default function Admin() {
               <div className="flex-1 min-w-0">
                 <div className="font-semibold text-sm">{s.title}</div>
                 <div className="text-slate-500 text-xs mt-0.5">
-                  {s.quiz?.length || 0} сұрақ · {s.duration || 'уақыт көрсетілмеген'}
+                  {s.quiz?.length || 0} сұрақ · {s.attachments?.length || 0} файл · {s.duration || 'уақыт көрсетілмеген'}
                 </div>
               </div>
+              <button onClick={() => openEdit(s)}
+                className="text-slate-400 hover:text-amber-400 transition text-sm px-3 py-1.5 rounded-lg hover:bg-amber-500/10 font-semibold">
+                Өңдеу
+              </button>
               <button onClick={() => handleDelete(s.id)}
                 className="text-slate-600 hover:text-red-400 transition text-sm px-3 py-1.5 rounded-lg hover:bg-red-500/10">
                 Өшіру
@@ -127,9 +244,16 @@ export default function Admin() {
         </div>
       )}
 
-      {/* Форма добавления */}
-      {tab === 'add' && (
+      {/* Форма добавления/редактирования */}
+      {isFormTab && (
         <div className="space-y-5">
+          {isEditing && (
+            <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-2.5">
+              <span className="text-amber-400 text-sm">✎</span>
+              <span className="text-amber-300 text-sm font-semibold">Өңдеу режимі: {form.title}</span>
+            </div>
+          )}
+
           <div>
             <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2">Тақырып *</label>
             <input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })}
@@ -161,6 +285,56 @@ export default function Admin() {
             <input value={form.duration} onChange={e => setForm({ ...form, duration: e.target.value })}
               placeholder="мыс: 15 мин"
               className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-indigo-500 transition placeholder:text-slate-600" />
+          </div>
+
+          {/* Файлы */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Файлдар (PDF, DOCX, ZIP...)</label>
+              <button onClick={() => fileInputRef.current?.click()}
+                className="text-xs bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 px-3 py-1.5 rounded-lg font-bold transition">
+                + Файл қосу
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFileUpload}
+            />
+
+            {/* Прогресс загрузок */}
+            {Object.entries(uploads).map(([name, pct]) => (
+              <div key={name} className="mb-2 bg-white/3 border border-white/8 rounded-xl p-3">
+                <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+                  <span className="truncate mr-2">{name}</span>
+                  <span>{pct}%</span>
+                </div>
+                <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                  <div className="h-full bg-sky-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            ))}
+
+            {/* Загруженные файлы */}
+            {attachments.length > 0 && (
+              <div className="space-y-2 mt-2">
+                {attachments.map((file, i) => (
+                  <div key={i} className="flex items-center gap-3 p-3 bg-white/3 border border-white/8 rounded-xl">
+                    <span className="text-lg flex-shrink-0">📎</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold truncate text-slate-200">{file.name}</div>
+                      {file.size && <div className="text-xs text-slate-500">{file.size}</div>}
+                    </div>
+                    <button onClick={() => removeAttachment(i)}
+                      className="text-slate-600 hover:text-red-400 transition text-xs px-2 py-1 rounded-lg hover:bg-red-500/10">
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Тест */}
@@ -208,10 +382,16 @@ export default function Admin() {
             </div>
           </div>
 
-          <button onClick={handleSubmit} disabled={saving}
-            className="w-full py-3.5 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 rounded-xl font-bold text-sm transition">
-            {saving ? 'Сақталуда...' : 'Этапты қосу'}
-          </button>
+          <div className="flex gap-3">
+            <button onClick={() => { setTab('list'); setEditingId(null); }}
+              className="px-6 py-3.5 bg-white/5 hover:bg-white/10 rounded-xl font-bold text-sm transition text-slate-300">
+              Бас тарту
+            </button>
+            <button onClick={handleSubmit} disabled={saving}
+              className="flex-1 py-3.5 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 rounded-xl font-bold text-sm transition">
+              {saving ? 'Сақталуда...' : isEditing ? '✓ Өзгерістерді сақтау' : 'Этапты қосу'}
+            </button>
+          </div>
         </div>
       )}
     </div>

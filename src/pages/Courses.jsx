@@ -18,7 +18,6 @@ export default function Courses() {
         const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         setStages(data);
 
-        // Открываем последний этап где остановился или первый
         const lastStage = profile?.currentStage || 0;
         const target = data[lastStage] || data[0];
         if (target) setActiveStage(target);
@@ -41,16 +40,16 @@ export default function Courses() {
     );
   }
 
+  const activeIndex = stages.findIndex(s => s.id === activeStage?.id);
+
   return (
     <div className="flex h-screen overflow-hidden">
-      {/* Список этапов */}
       <aside className="w-72 border-r border-white/5 flex flex-col overflow-hidden">
         <div className="px-6 py-5 border-b border-white/5">
           <h1 className="font-black text-lg">Курс</h1>
           <div className="text-slate-500 text-xs mt-1">
             {completedSet.size} / {stages.length} аяқталды
           </div>
-          {/* Прогресс бар */}
           <div className="mt-3 h-1.5 bg-white/5 rounded-full overflow-hidden">
             <div
               className="h-full bg-gradient-to-r from-indigo-500 to-sky-400 rounded-full transition-all"
@@ -106,15 +105,16 @@ export default function Courses() {
         </div>
       </aside>
 
-      {/* Контент этапа */}
       <div className="flex-1 overflow-y-auto">
         {activeStage ? (
           <StagePlayer
+            key={activeStage.id}
             stage={activeStage}
-            stageIndex={stages.findIndex(s => s.id === activeStage.id)}
+            stageIndex={activeIndex}
             totalStages={stages.length}
             isCompleted={completedSet.has(activeStage?.id)}
-            nextStage={stages[stages.findIndex(s => s.id === activeStage.id) + 1]}
+            isLocked={activeIndex > 0 && !completedSet.has(stages[activeIndex - 1]?.id)}
+            nextStage={stages[activeIndex + 1]}
             onComplete={(nextStage) => {
               if (nextStage) setActiveStage(nextStage);
             }}
