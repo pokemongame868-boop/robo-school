@@ -32,6 +32,8 @@ export default function Admin() {
   const [tab, setTab] = useState('list'); // 'list' | 'add' | 'edit'
   const [editingId, setEditingId] = useState(null);
   const [uploads, setUploads] = useState({}); // {filename: progress 0-100}
+  const [linkForm, setLinkForm] = useState({ name: '', url: '' });
+  const [showLinkForm, setShowLinkForm] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -136,6 +138,15 @@ export default function Admin() {
       } catch (_) {}
     }
     setAttachments(prev => prev.filter((_, j) => j !== i));
+  };
+
+  const addLinkAttachment = () => {
+    if (!linkForm.name.trim() || !linkForm.url.trim()) return alert('Атауы мен сілтемені енгізіңіз');
+    let url = linkForm.url.trim();
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    setAttachments(prev => [...prev, { name: linkForm.name.trim(), url, size: 'Сілтеме' }]);
+    setLinkForm({ name: '', url: '' });
+    setShowLinkForm(false);
   };
 
   // ---- Сохранение ----
@@ -291,10 +302,16 @@ export default function Admin() {
           <div>
             <div className="flex items-center justify-between mb-3">
               <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Файлдар (PDF, DOCX, ZIP...)</label>
-              <button onClick={() => fileInputRef.current?.click()}
-                className="text-xs bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 px-3 py-1.5 rounded-lg font-bold transition">
-                + Файл қосу
-              </button>
+              <div className="flex gap-2">
+                <button onClick={() => { setShowLinkForm(v => !v); }}
+                  className="text-xs bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 px-3 py-1.5 rounded-lg font-bold transition">
+                  + Сілтеме
+                </button>
+                <button onClick={() => fileInputRef.current?.click()}
+                  className="text-xs bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 px-3 py-1.5 rounded-lg font-bold transition">
+                  + Файл жүктеу
+                </button>
+              </div>
             </div>
             <input
               ref={fileInputRef}
@@ -303,6 +320,34 @@ export default function Admin() {
               className="hidden"
               onChange={handleFileUpload}
             />
+
+            {/* Форма добавления ссылки */}
+            {showLinkForm && (
+              <div className="mb-3 p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl space-y-2">
+                <input
+                  value={linkForm.name}
+                  onChange={e => setLinkForm(p => ({ ...p, name: e.target.value }))}
+                  placeholder="Файл атауы (мыс: Нұсқаулық.pdf)"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500 transition placeholder:text-slate-600"
+                />
+                <input
+                  value={linkForm.url}
+                  onChange={e => setLinkForm(p => ({ ...p, url: e.target.value }))}
+                  placeholder="Сілтеме (Google Drive, Yandex Disk...)"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500 transition placeholder:text-slate-600"
+                />
+                <div className="flex gap-2">
+                  <button onClick={addLinkAttachment}
+                    className="flex-1 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded-lg text-sm font-bold transition">
+                    Қосу
+                  </button>
+                  <button onClick={() => { setShowLinkForm(false); setLinkForm({ name: '', url: '' }); }}
+                    className="px-4 py-2 bg-white/5 hover:bg-white/10 text-slate-400 rounded-lg text-sm transition">
+                    Бас тарту
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Прогресс загрузок */}
             {Object.entries(uploads).map(([name, pct]) => (
